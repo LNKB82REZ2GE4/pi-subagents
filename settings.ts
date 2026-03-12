@@ -8,7 +8,14 @@ import * as path from "node:path";
 import type { AgentConfig } from "./agents.js";
 import { normalizeSkillInput } from "./skills.js";
 
-const CHAIN_RUNS_DIR = path.join(os.tmpdir(), "pi-chain-runs");
+function getDefaultPiDir(): string {
+	return process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+}
+
+function getDefaultChainRunsDir(): string {
+	return path.join(getDefaultPiDir(), "sessions", "chains");
+}
+
 const CHAIN_DIR_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // =============================================================================
@@ -90,7 +97,8 @@ export function getStepAgents(step: ChainStep): string[] {
 // =============================================================================
 
 export function createChainDir(runId: string, baseDir?: string): string {
-	const chainDir = path.join(baseDir ? path.resolve(baseDir) : CHAIN_RUNS_DIR, runId);
+	const chainBaseDir = baseDir ? path.resolve(baseDir) : getDefaultChainRunsDir();
+	const chainDir = path.join(chainBaseDir, runId);
 	fs.mkdirSync(chainDir, { recursive: true });
 	return chainDir;
 }
@@ -102,18 +110,19 @@ export function removeChainDir(chainDir: string): void {
 }
 
 export function cleanupOldChainDirs(): void {
-	if (!fs.existsSync(CHAIN_RUNS_DIR)) return;
+	const chainRunsDir = getDefaultChainRunsDir();
+	if (!fs.existsSync(chainRunsDir)) return;
 	const now = Date.now();
 	let dirs: string[];
 	try {
-		dirs = fs.readdirSync(CHAIN_RUNS_DIR);
+		dirs = fs.readdirSync(chainRunsDir);
 	} catch {
 		return;
 	}
 
 	for (const dir of dirs) {
 		try {
-			const dirPath = path.join(CHAIN_RUNS_DIR, dir);
+			const dirPath = path.join(chainRunsDir, dir);
 			const stat = fs.statSync(dirPath);
 			if (stat.isDirectory() && now - stat.mtimeMs > CHAIN_DIR_MAX_AGE_MS) {
 				fs.rmSync(dirPath, { recursive: true });

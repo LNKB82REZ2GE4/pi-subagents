@@ -62,6 +62,7 @@ export interface AsyncChainParams {
 	shareEnabled: boolean;
 	sessionRoot?: string;
 	chainSkills?: string[];
+	chainDir?: string;
 }
 
 export interface AsyncSingleParams {
@@ -121,6 +122,7 @@ export function executeAsyncChain(
 ): AsyncExecutionResult {
 	const { chain, agents, ctx, cwd, maxOutput, artifactsDir, artifactConfig, shareEnabled, sessionRoot } = params;
 	const chainSkills = params.chainSkills ?? [];
+	const chainDir = params.chainDir;
 
 	// Validate all agents exist before building steps
 	for (const s of chain) {
@@ -210,6 +212,7 @@ export function executeAsyncChain(
 			artifactConfig,
 			share: shareEnabled,
 			sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
+			chainDir,
 			asyncDir,
 			sessionId: ctx.currentSessionId,
 			piPackageRoot,

@@ -88,6 +88,7 @@ export interface SingleResult {
 	usage: Usage;
 	model?: string;
 	error?: string;
+	sessionDir?: string;
 	sessionFile?: string;
 	skills?: string[];
 	skillsWarning?: string;

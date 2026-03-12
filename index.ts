@@ -227,7 +227,7 @@ EXECUTION (use exactly ONE mode):
 CHAIN TEMPLATE VARIABLES (use in task strings):
 • {task} - The original task/request from the user
 • {previous} - Text response from the previous step (empty for first step)
-• {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/pi-chain-runs/abc123/)
+• {chain_dir} - Shared directory for chain files (e.g., <active-pi-dir>/sessions/chains/abc123/)
 
 CHAIN DATA FLOW:
 1. Each step's text response automatically becomes {previous} for the next step
@@ -281,12 +281,13 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 			const agents = discoverAgents(ctx.cwd, scope).agents;
 			const runId = randomUUID().slice(0, 8);
 			const shareEnabled = params.share === true;
-			const sessionEnabled = shareEnabled || Boolean(params.sessionDir);
-			const sessionRoot = sessionEnabled
-				? params.sessionDir
-					? path.resolve(params.sessionDir)
-					: fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-"))
-				: undefined;
+			const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+			const defaultSubagentSessionRoot = path.join(agentDir, "sessions", "subagents", `run-${runId}`);
+			const defaultChainDir = path.join(agentDir, "sessions", "chains");
+			const implicitSessionDir = params.sessionDir ?? defaultSubagentSessionRoot;
+			const effectiveChainDir = params.chainDir ?? defaultChainDir;
+			const sessionEnabled = true;
+			const sessionRoot = path.resolve(implicitSessionDir);
 			if (sessionRoot) {
 				try {
 					fs.mkdirSync(sessionRoot, { recursive: true });
@@ -408,6 +409,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 						shareEnabled,
 						sessionRoot,
 						chainSkills,
+						chainDir: effectiveChainDir,
 					});
 				}
 
@@ -467,7 +469,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 					clarify: params.clarify,
 					onUpdate,
 					chainSkills,
-					chainDir: params.chainDir,
+					chainDir: effectiveChainDir,
 				});
 
 				// User requested async via TUI - dispatch to async executor
@@ -492,6 +494,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 						shareEnabled,
 						sessionRoot,
 						chainSkills: chainResult.requestedAsync.chainSkills,
+						chainDir: effectiveChainDir,
 					});
 				}
 
@@ -1019,7 +1022,11 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 
 	const setupDirectRun = (ctx: ExtensionContext) => {
 		const runId = randomUUID().slice(0, 8);
-		const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-"));
+		const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+		const sessionRoot = path.join(agentDir, "sessions", "subagents", `run-${runId}`);
+		try {
+			fs.mkdirSync(sessionRoot, { recursive: true });
+		} catch {}
 		return {
 			runId,
 			shareEnabled: false,
@@ -1085,7 +1092,11 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 						}
 						const id = randomUUID();
 						const asyncCtx = { pi, cwd: ctx.cwd, currentSessionId: ctx.sessionManager.getSessionId() ?? id };
-						const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-"));
+						const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+						const sessionRoot = path.join(agentDir, "sessions", "subagents", `run-${id.slice(0, 8)}`);
+						try {
+							fs.mkdirSync(sessionRoot, { recursive: true });
+						} catch {}
 						executeAsyncChain(id, {
 							chain: r.requestedAsync.chain,
 							agents,
@@ -1096,6 +1107,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 							shareEnabled: false,
 							sessionRoot,
 							chainSkills: r.requestedAsync.chainSkills,
+							chainDir: path.join(agentDir, "sessions", "chains"),
 						}).then((asyncResult) => {
 							pi.sendUserMessage(asyncResult.content[0]?.text || "(launched in background)");
 						}).catch((err) => {
