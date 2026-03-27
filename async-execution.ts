@@ -228,6 +228,7 @@ export function executeAsyncChain(
 			: [(firstStep as SequentialStep).agent];
 		ctx.pi.events.emit("subagent:started", {
 			id,
+			runId: id,
 			pid,
 			agent: firstAgents[0],
 			task: isParallelStep(firstStep)
@@ -239,6 +240,33 @@ export function executeAsyncChain(
 			cwd: runnerCwd,
 			asyncDir,
 		});
+
+		// Watch the async result file so we can emit subagent:complete when the
+		// chain runner finishes (the runner writes <id>.json to RESULTS_DIR).
+		// This keeps the parent process tracking without blocking.
+		const resultFile = path.join(RESULTS_DIR, `${id}.json`);
+		const started = Date.now();
+		const maxWatchMs = 24 * 60 * 60 * 1000; // give up after 24h
+		const pollInterval = setInterval(() => {
+			if (Date.now() - started > maxWatchMs) {
+				clearInterval(pollInterval);
+				ctx.pi.events.emit("subagent:complete", { id, runId: id, status: "failed", reason: "watch-timeout", asyncDir });
+				return;
+			}
+			if (fs.existsSync(resultFile)) {
+				clearInterval(pollInterval);
+				let status: "complete" | "failed" = "complete";
+				try {
+					const result = JSON.parse(fs.readFileSync(resultFile, "utf8")) as { isError?: boolean };
+					if (result.isError) status = "failed";
+				} catch {
+					status = "failed";
+				}
+				ctx.pi.events.emit("subagent:complete", { id, runId: id, status, asyncDir });
+			}
+		}, 5000);
+		// Don't let the poll interval keep the process alive
+		if (pollInterval.unref) pollInterval.unref();
 	}
 
 	// Build chain description with parallel groups shown as [agent1+agent2]
