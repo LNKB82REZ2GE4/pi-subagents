@@ -194,32 +194,24 @@ function buildSkillPaths(cwd: string): string[] {
 	return [...new Set([...defaultSkillPaths, ...packagePaths, ...settingsPaths])];
 }
 
-function inferSkillSource(rawSource: unknown, filePath: string, cwd: string): SkillSource {
-	const source = typeof rawSource === "string" ? rawSource : "";
+function inferSkillSource(sourceInfo: { source: string; scope: string }, filePath: string, cwd: string): SkillSource {
+	const { scope, source } = sourceInfo;
+
+	if (scope === "project" && source === "local") return "project";
+	if (scope === "user" && source === "local") return "user";
+
+	// Fallback: infer from file path when sourceInfo isn't specific enough
+	// (e.g. scope === "temporary" for skills loaded via explicit skillPaths)
 	const projectRoot = path.resolve(cwd, CONFIG_DIR);
 	const isProjectScoped = isWithinPath(filePath, projectRoot);
-	const isUserScoped = isWithinPath(filePath, AGENT_DIR);
-	const globalRoot = getGlobalNpmRoot();
-	const isGlobalPackage = globalRoot ? isWithinPath(filePath, globalRoot) : false;
-
-	if (source === "project") return "project";
-	if (source === "user") return "user";
-	if (source === "settings") {
-		if (isProjectScoped) return "project-settings";
-		if (isUserScoped) return "user-settings";
-		return "unknown";
-	}
-	if (source === "package") {
-		if (isProjectScoped) return "project-package";
-		if (isUserScoped || isGlobalPackage) return "user-package";
-		return "unknown";
-	}
-	if (source === "extension") return "extension";
-	if (source === "builtin") return "builtin";
-
 	if (isProjectScoped) return "project";
+
+	const isUserScoped = isWithinPath(filePath, AGENT_DIR);
 	if (isUserScoped) return "user";
-	if (isGlobalPackage) return "user-package";
+
+	const globalRoot = getGlobalNpmRoot();
+	if (globalRoot && isWithinPath(filePath, globalRoot)) return "user-package";
+
 	return "unknown";
 }
 
@@ -247,7 +239,7 @@ function getCachedSkills(cwd: string): CachedSkillEntry[] {
 		const entry: CachedSkillEntry = {
 			name: skill.name,
 			filePath: skill.filePath,
-			source: inferSkillSource((skill as { source?: unknown }).source, skill.filePath, cwd),
+			source: inferSkillSource(skill.sourceInfo, skill.filePath, cwd),
 			description: skill.description,
 			order: i,
 		};
@@ -346,6 +338,21 @@ export function normalizeSkillInput(
 	if (input === true || input === undefined) return undefined;
 	if (Array.isArray(input)) {
 		return [...new Set(input.map((s) => s.trim()).filter((s) => s.length > 0))];
+	}
+	// Guard against JSON-encoded arrays arriving as strings (e.g. '["a","b"]').
+	// Models sometimes serialise the skill parameter as a JSON string instead of
+	// a native array, and naively splitting on "," would embed brackets/quotes
+	// into the skill names, causing resolution to silently fail.
+	const trimmed = input.trim();
+	if (trimmed.startsWith("[")) {
+		try {
+			const parsed = JSON.parse(trimmed);
+			if (Array.isArray(parsed)) {
+				return normalizeSkillInput(parsed);
+			}
+		} catch {
+			// Not valid JSON – fall through to comma-split
+		}
 	}
 	return [...new Set(input.split(",").map((s) => s.trim()).filter((s) => s.length > 0))];
 }

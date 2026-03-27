@@ -10,9 +10,9 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
-import { applyThinkingSuffix } from "./execution.js";
+import { applyThinkingSuffix } from "./pi-args.js";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "./single-output.js";
-import { isParallelStep, resolveStepBehavior, type ChainStep, type ParallelStep, type SequentialStep, type StepOverrides } from "./settings.js";
+import { isParallelStep, resolveStepBehavior, type ChainStep, type SequentialStep, type StepOverrides } from "./settings.js";
 import type { RunnerStep } from "./parallel-utils.js";
 import { resolvePiPackageRoot } from "./pi-spawn.js";
 import { buildSkillInjection, normalizeSkillInput, resolveSkills } from "./skills.js";
@@ -40,7 +40,9 @@ const jitiCliPath: string | undefined = (() => {
 		try {
 			const p = candidate();
 			if (fs.existsSync(p)) return p;
-		} catch {}
+		} catch {
+			// Candidate not available in this install, continue probing.
+		}
 	}
 	return undefined;
 })();
@@ -63,6 +65,7 @@ export interface AsyncChainParams {
 	sessionRoot?: string;
 	chainSkills?: string[];
 	chainDir?: string;
+	sessionFilesByFlatIndex?: (string | undefined)[];
 }
 
 export interface AsyncSingleParams {
@@ -76,6 +79,7 @@ export interface AsyncSingleParams {
 	artifactConfig: ArtifactConfig;
 	shareEnabled: boolean;
 	sessionRoot?: string;
+	sessionFile?: string;
 	skills?: string[];
 	output?: string | false;
 }
@@ -84,6 +88,11 @@ export interface AsyncExecutionResult {
 	content: Array<{ type: "text"; text: string }>;
 	details: Details;
 	isError?: boolean;
+}
+
+function getDefaultChainRunsDir(): string {
+	const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+	return path.join(agentDir, "sessions", "chains");
 }
 
 /**
@@ -120,9 +129,20 @@ export function executeAsyncChain(
 	id: string,
 	params: AsyncChainParams,
 ): AsyncExecutionResult {
-	const { chain, agents, ctx, cwd, maxOutput, artifactsDir, artifactConfig, shareEnabled, sessionRoot } = params;
+	const {
+		chain,
+		agents,
+		ctx,
+		cwd,
+		maxOutput,
+		artifactsDir,
+		artifactConfig,
+		shareEnabled,
+		sessionRoot,
+		sessionFilesByFlatIndex,
+	} = params;
 	const chainSkills = params.chainSkills ?? [];
-	const chainDir = params.chainDir;
+	const chainDir = params.chainDir ?? getDefaultChainRunsDir();
 
 	// Validate all agents exist before building steps
 	for (const s of chain) {
@@ -143,10 +163,17 @@ export function executeAsyncChain(
 	const asyncDir = path.join(ASYNC_DIR, id);
 	try {
 		fs.mkdirSync(asyncDir, { recursive: true });
-	} catch {}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			content: [{ type: "text", text: `Failed to create async run directory '${asyncDir}': ${message}` }],
+			isError: true,
+			details: { mode: "chain" as const, results: [] },
+		};
+	}
 
 	/** Build a resolved runner step from a SequentialStep */
-	const buildSeqStep = (s: SequentialStep) => {
+	const buildSeqStep = (s: SequentialStep, sessionFile?: string) => {
 		const a = agents.find((x) => x.name === s.agent)!;
 		const stepSkillInput = normalizeSkillInput(s.skill);
 		const stepOverrides: StepOverrides = { skills: stepSkillInput };
@@ -176,7 +203,15 @@ export function executeAsyncChain(
 			systemPrompt,
 			skills: resolvedSkills.map((r) => r.name),
 			outputPath,
+			sessionFile,
 		};
+	};
+
+	let flatStepIndex = 0;
+	const nextSessionFile = (): string | undefined => {
+		const sessionFile = sessionFilesByFlatIndex?.[flatStepIndex];
+		flatStepIndex++;
+		return sessionFile;
 	};
 
 	// Build runner steps — sequential steps become flat objects,
@@ -191,12 +226,12 @@ export function executeAsyncChain(
 					skill: t.skill,
 					model: t.model,
 					output: t.output,
-				})),
+				}, nextSessionFile())),
 				concurrency: s.concurrency,
 				failFast: s.failFast,
 			};
 		}
-		return buildSeqStep(s as SequentialStep);
+		return buildSeqStep(s as SequentialStep, nextSessionFile());
 	});
 
 	const runnerCwd = cwd ?? ctx.cwd;
@@ -289,7 +324,19 @@ export function executeAsyncSingle(
 	id: string,
 	params: AsyncSingleParams,
 ): AsyncExecutionResult {
-	const { agent, task, agentConfig, ctx, cwd, maxOutput, artifactsDir, artifactConfig, shareEnabled, sessionRoot } = params;
+	const {
+		agent,
+		task,
+		agentConfig,
+		ctx,
+		cwd,
+		maxOutput,
+		artifactsDir,
+		artifactConfig,
+		shareEnabled,
+		sessionRoot,
+		sessionFile,
+	} = params;
 	const skillNames = params.skills ?? agentConfig.skills ?? [];
 	const { resolved: resolvedSkills } = resolveSkills(skillNames, ctx.cwd);
 	let systemPrompt = agentConfig.systemPrompt?.trim() || null;
@@ -301,7 +348,14 @@ export function executeAsyncSingle(
 	const asyncDir = path.join(ASYNC_DIR, id);
 	try {
 		fs.mkdirSync(asyncDir, { recursive: true });
-	} catch {}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			content: [{ type: "text", text: `Failed to create async run directory '${asyncDir}': ${message}` }],
+			isError: true,
+			details: { mode: "single" as const, results: [] },
+		};
+	}
 
 	const runnerCwd = cwd ?? ctx.cwd;
 	const outputPath = resolveSingleOutputPath(params.output, ctx.cwd, cwd);
@@ -321,6 +375,7 @@ export function executeAsyncSingle(
 					systemPrompt,
 					skills: resolvedSkills.map((r) => r.name),
 					outputPath,
+					sessionFile,
 				},
 			],
 			resultPath: path.join(RESULTS_DIR, `${id}.json`),

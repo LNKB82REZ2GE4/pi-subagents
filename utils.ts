@@ -325,27 +325,4 @@ export function extractTextFromContent(content: unknown): string {
 // Concurrency Utilities
 // ============================================================================
 
-/**
- * Map over items with limited concurrency
- */
-export async function mapConcurrent<T, R>(
-	items: T[],
-	limit: number,
-	fn: (item: T, i: number) => Promise<R>,
-): Promise<R[]> {
-	// Clamp to at least 1; NaN/undefined/0/negative all become 1
-	const safeLimit = Math.max(1, Math.floor(limit) || 1);
-	const results: R[] = new Array(items.length);
-	let next = 0;
-
-	async function worker(): Promise<void> {
-		while (next < items.length) {
-			const i = next++;
-			results[i] = await fn(items[i], i);
-		}
-	}
-
-	const workers = Array.from({ length: Math.min(safeLimit, items.length) }, () => worker());
-	await Promise.all(workers);
-	return results;
-}
+export { mapConcurrent } from "./parallel-utils.js";
